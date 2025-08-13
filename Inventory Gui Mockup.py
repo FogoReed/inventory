@@ -36,6 +36,7 @@ class Database:
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.create_tables()
+        self.populate_types()
         self.populate_rooms_and_owners_from_equipment()
 
     def create_tables(self):
@@ -83,6 +84,10 @@ class Database:
         )
         ''')
         self.conn.commit()
+
+    def populate_types(self):
+        for new_type in TYPE_UNIFY_MAP.values():
+            self.add_type(new_type)
 
     def add_equipment(self, data):
         c = self.conn.cursor()
@@ -132,10 +137,10 @@ class Database:
         params = []
         if not show_written_off:
             query += 'AND written_off=0 '
-        if room:
+        if room and room != '---':
             query += 'AND room LIKE ? '
             params.append(f'%{room}%')
-        if owner:
+        if owner and owner != '---':
             query += 'AND owner LIKE ? '
             params.append(f'%{owner}%')
         c.execute(query, params)
@@ -210,9 +215,15 @@ class Database:
             return False
 
     def get_all_types(self):
-        c = self.conn.cursor()
-        c.execute("SELECT type_name FROM equipment_types ORDER BY type_name")
-        return [row['type_name'] for row in c.fetchall()]
+        try:
+            c = self.conn.cursor()
+            c.execute("SELECT type_name FROM equipment_types ORDER BY type_name")
+            types = [row['type_name'] for row in c.fetchall()]
+            print(f"Retrieved types: {types}")
+            return types
+        except Exception as e:
+            print(f"Error in get_all_types: {str(e)}")
+            return []
 
     def update_type(self, old_name, new_name):
         c = self.conn.cursor()
@@ -236,9 +247,15 @@ class Database:
             return False
 
     def get_all_rooms(self):
-        c = self.conn.cursor()
-        c.execute("SELECT room_name FROM rooms ORDER BY room_name")
-        return [row['room_name'] for row in c.fetchall()]
+        try:
+            c = self.conn.cursor()
+            c.execute("SELECT room_name FROM rooms ORDER BY room_name")
+            rooms = [row['room_name'] for row in c.fetchall()]
+            print(f"Retrieved rooms: {rooms}")
+            return rooms
+        except Exception as e:
+            print(f"Error in get_all_rooms: {str(e)}")
+            return []
 
     def update_room(self, old_name, new_name):
         c = self.conn.cursor()
@@ -262,9 +279,15 @@ class Database:
             return False
 
     def get_all_owners(self):
-        c = self.conn.cursor()
-        c.execute("SELECT owner_name FROM owners ORDER BY owner_name")
-        return [row['owner_name'] for row in c.fetchall()]
+        try:
+            c = self.conn.cursor()
+            c.execute("SELECT owner_name FROM owners ORDER BY owner_name")
+            owners = [row['owner_name'] for row in c.fetchall()]
+            print(f"Retrieved owners: {owners}")
+            return owners
+        except Exception as e:
+            print(f"Error in get_all_owners: {str(e)}")
+            return []
 
     def update_owner(self, old_name, new_name):
         c = self.conn.cursor()
@@ -306,71 +329,12 @@ class Database:
             self.ensure_type(t)
         self.conn.commit()
 
-# --- Custom Widgets ---
-class AutoCompleteEntry(ctk.CTkEntry):
-    def __init__(self, master=None, completion_list=None, callback=None, **kwargs):
-        super().__init__(master, **kwargs)
-        self.completion_list = completion_list or []
-        self.callback = callback
-        self.listbox = None
-        self.bind("<KeyRelease>", self.check_key)
-        self.bind("<FocusOut>", self.hide_listbox)
-        self.bind("<Button-1>", self.handle_click)
-
-    def check_key(self, event):
-        typed = self.get().lower()
-        if typed == '':
-            self.hide_listbox()
-            return
-        matches = [x for x in self.completion_list if typed in x.lower()]
-        matches.sort()
-        if matches:
-            if self.listbox is None:
-                self.listbox = tk.Listbox(self.master, height=10)
-                self.listbox.bind("<<ListboxSelect>>", self.on_listbox_select)
-            self.listbox.delete(0, tk.END)
-            for m in matches:
-                self.listbox.insert(tk.END, m)
-            self.listbox.place(x=self.winfo_x(), y=self.winfo_y() + self.winfo_height())
-        else:
-            self.hide_listbox()
-
-    def handle_click(self, event):
-        if self.get() == '':
-            self.show_full_list()
-        return 'break'
-
-    def show_full_list(self):
-        matches = sorted(self.completion_list)
-        if matches:
-            if self.listbox is None:
-                self.listbox = tk.Listbox(self.master, height=10)
-                self.listbox.bind("<<ListboxSelect>>", self.on_listbox_select)
-            self.listbox.delete(0, tk.END)
-            for m in matches:
-                self.listbox.insert(tk.END, m)
-            self.listbox.place(x=self.winfo_x(), y=self.winfo_y() + self.winfo_height())
-
-    def on_listbox_select(self, event):
-        if self.listbox.curselection():
-            value = self.listbox.get(self.listbox.curselection())
-            self.delete(0, tk.END)
-            self.insert(0, value)
-            if self.callback:
-                self.callback(value)
-        self.hide_listbox()
-
-    def hide_listbox(self, event=None):
-        if self.listbox:
-            self.listbox.place_forget()
-
 # --- Management Pages ---
 class RoomsManagementPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
         self.db = controller.db
-        self.old_value = None
 
         nav_frame = ctk.CTkFrame(self)
         nav_frame.pack(fill="x", pady=10)
@@ -384,11 +348,18 @@ class RoomsManagementPage(ctk.CTkFrame):
         lbl = ctk.CTkLabel(self, text="Управління кабінетами", font=ctk.CTkFont(size=18, weight="bold"))
         lbl.pack(pady=10)
 
-        add_frame = ctk.CTkFrame(self)
-        add_frame.pack(pady=10, padx=20, fill="x")
+        select_frame = ctk.CTkFrame(self)
+        select_frame.pack(pady=10, padx=20, fill="x")
 
-        ctk.CTkLabel(add_frame, text="Кабінет:").pack(side="left", padx=5)
-        self.entry = AutoCompleteEntry(add_frame, completion_list=self.db.get_all_rooms(), callback=self.set_old_value)
+        ctk.CTkLabel(select_frame, text="Вибрати кабінет:").pack(side="left", padx=5)
+        self.combo = ctk.CTkComboBox(select_frame, values=self.db.get_all_rooms(), command=self.set_selected)
+        self.combo.pack(side="left", expand=True, fill="x", padx=5)
+
+        edit_frame = ctk.CTkFrame(self)
+        edit_frame.pack(pady=10, padx=20, fill="x")
+
+        ctk.CTkLabel(edit_frame, text="Нове ім'я:").pack(side="left", padx=5)
+        self.entry = ctk.CTkEntry(edit_frame)
         self.entry.pack(side="left", expand=True, fill="x", padx=5)
 
         buttons_frame = ctk.CTkFrame(self)
@@ -406,55 +377,55 @@ class RoomsManagementPage(ctk.CTkFrame):
         self.status = ctk.CTkLabel(self, text="")
         self.status.pack(pady=10)
 
-    def set_old_value(self, value):
-        self.old_value = value
+    def set_selected(self, value):
+        self.entry.delete(0, tk.END)
+        self.entry.insert(0, value)
 
     def add_item(self):
         new = self.entry.get().strip()
         if new:
             if self.db.add_room(new):
                 self.status.configure(text="Кабінет додано")
-                self.refresh()
-                self.entry.delete(0, tk.END)
-                self.old_value = None
+                self.local_refresh()
+                self.controller.refresh_pages()
             else:
                 self.status.configure(text="Кабінет вже існує")
 
     def update_item(self):
-        if self.old_value is None:
-            self.status.configure(text="Спочатку виберіть з списку")
-            return
+        old = self.combo.get()
         new = self.entry.get().strip()
-        if new:
-            if new != self.old_value:
-                self.db.update_room(self.old_value, new)
-                self.status.configure(text="Кабінет оновлено")
-                self.refresh()
-                self.entry.delete(0, tk.END)
-                self.old_value = None
-            else:
-                self.status.configure(text="Немає змін")
+        if old and new and old != new:
+            self.db.update_room(old, new)
+            self.status.configure(text="Кабінет оновлено")
+            self.local_refresh()
+            self.controller.refresh_pages()
+        elif old == new:
+            self.status.configure(text="Немає змін")
+        else:
+            self.status.configure(text="Виберіть кабінет та введіть нове ім'я")
 
     def delete_item(self):
-        if self.old_value is None:
-            self.status.configure(text="Спочатку виберіть з списку")
-            return
-        self.db.delete_room(self.old_value)
-        self.status.configure(text="Кабінет видалено")
-        self.refresh()
+        selected = self.combo.get()
+        if selected:
+            self.db.delete_room(selected)
+            self.status.configure(text="Кабінет видалено")
+            self.local_refresh()
+            self.controller.refresh_pages()
+        else:
+            self.status.configure(text="Виберіть кабінет")
+
+    def local_refresh(self):
+        self.combo.configure(values=self.db.get_all_rooms())
         self.entry.delete(0, tk.END)
-        self.old_value = None
 
     def refresh(self):
-        self.entry.completion_list = self.db.get_all_rooms()
-        self.controller.refresh_pages()
+        self.local_refresh()
 
 class OwnersManagementPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
         self.db = controller.db
-        self.old_value = None
 
         nav_frame = ctk.CTkFrame(self)
         nav_frame.pack(fill="x", pady=10)
@@ -468,11 +439,18 @@ class OwnersManagementPage(ctk.CTkFrame):
         lbl = ctk.CTkLabel(self, text="Управління власниками", font=ctk.CTkFont(size=18, weight="bold"))
         lbl.pack(pady=10)
 
-        add_frame = ctk.CTkFrame(self)
-        add_frame.pack(pady=10, padx=20, fill="x")
+        select_frame = ctk.CTkFrame(self)
+        select_frame.pack(pady=10, padx=20, fill="x")
 
-        ctk.CTkLabel(add_frame, text="Власник:").pack(side="left", padx=5)
-        self.entry = AutoCompleteEntry(add_frame, completion_list=self.db.get_all_owners(), callback=self.set_old_value)
+        ctk.CTkLabel(select_frame, text="Вибрати власника:").pack(side="left", padx=5)
+        self.combo = ctk.CTkComboBox(select_frame, values=self.db.get_all_owners(), command=self.set_selected)
+        self.combo.pack(side="left", expand=True, fill="x", padx=5)
+
+        edit_frame = ctk.CTkFrame(self)
+        edit_frame.pack(pady=10, padx=20, fill="x")
+
+        ctk.CTkLabel(edit_frame, text="Нове ім'я:").pack(side="left", padx=5)
+        self.entry = ctk.CTkEntry(edit_frame)
         self.entry.pack(side="left", expand=True, fill="x", padx=5)
 
         buttons_frame = ctk.CTkFrame(self)
@@ -490,55 +468,55 @@ class OwnersManagementPage(ctk.CTkFrame):
         self.status = ctk.CTkLabel(self, text="")
         self.status.pack(pady=10)
 
-    def set_old_value(self, value):
-        self.old_value = value
+    def set_selected(self, value):
+        self.entry.delete(0, tk.END)
+        self.entry.insert(0, value)
 
     def add_item(self):
         new = self.entry.get().strip()
         if new:
             if self.db.add_owner(new):
                 self.status.configure(text="Власника додано")
-                self.refresh()
-                self.entry.delete(0, tk.END)
-                self.old_value = None
+                self.local_refresh()
+                self.controller.refresh_pages()
             else:
                 self.status.configure(text="Власник вже існує")
 
     def update_item(self):
-        if self.old_value is None:
-            self.status.configure(text="Спочатку виберіть з списку")
-            return
+        old = self.combo.get()
         new = self.entry.get().strip()
-        if new:
-            if new != self.old_value:
-                self.db.update_owner(self.old_value, new)
-                self.status.configure(text="Власника оновлено")
-                self.refresh()
-                self.entry.delete(0, tk.END)
-                self.old_value = None
-            else:
-                self.status.configure(text="Немає змін")
+        if old and new and old != new:
+            self.db.update_owner(old, new)
+            self.status.configure(text="Власника оновлено")
+            self.local_refresh()
+            self.controller.refresh_pages()
+        elif old == new:
+            self.status.configure(text="Немає змін")
+        else:
+            self.status.configure(text="Виберіть власника та введіть нове ім'я")
 
     def delete_item(self):
-        if self.old_value is None:
-            self.status.configure(text="Спочатку виберіть з списку")
-            return
-        self.db.delete_owner(self.old_value)
-        self.status.configure(text="Власника видалено")
-        self.refresh()
+        selected = self.combo.get()
+        if selected:
+            self.db.delete_owner(selected)
+            self.status.configure(text="Власника видалено")
+            self.local_refresh()
+            self.controller.refresh_pages()
+        else:
+            self.status.configure(text="Виберіть власника")
+
+    def local_refresh(self):
+        self.combo.configure(values=self.db.get_all_owners())
         self.entry.delete(0, tk.END)
-        self.old_value = None
 
     def refresh(self):
-        self.entry.completion_list = self.db.get_all_owners()
-        self.controller.refresh_pages()
+        self.local_refresh()
 
 class TypesManagementPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
         self.db = controller.db
-        self.old_value = None
 
         nav_frame = ctk.CTkFrame(self)
         nav_frame.pack(fill="x", pady=10)
@@ -552,11 +530,18 @@ class TypesManagementPage(ctk.CTkFrame):
         lbl = ctk.CTkLabel(self, text="Управління типами обладнання", font=ctk.CTkFont(size=18, weight="bold"))
         lbl.pack(pady=10)
 
-        add_frame = ctk.CTkFrame(self)
-        add_frame.pack(pady=10, padx=20, fill="x")
+        select_frame = ctk.CTkFrame(self)
+        select_frame.pack(pady=10, padx=20, fill="x")
 
-        ctk.CTkLabel(add_frame, text="Тип:").pack(side="left", padx=5)
-        self.entry = AutoCompleteEntry(add_frame, completion_list=self.db.get_all_types(), callback=self.set_old_value)
+        ctk.CTkLabel(select_frame, text="Вибрати тип:").pack(side="left", padx=5)
+        self.combo = ctk.CTkComboBox(select_frame, values=self.db.get_all_types(), command=self.set_selected)
+        self.combo.pack(side="left", expand=True, fill="x", padx=5)
+
+        edit_frame = ctk.CTkFrame(self)
+        edit_frame.pack(pady=10, padx=20, fill="x")
+
+        ctk.CTkLabel(edit_frame, text="Нове ім'я:").pack(side="left", padx=5)
+        self.entry = ctk.CTkEntry(edit_frame)
         self.entry.pack(side="left", expand=True, fill="x", padx=5)
 
         buttons_frame = ctk.CTkFrame(self)
@@ -574,48 +559,49 @@ class TypesManagementPage(ctk.CTkFrame):
         self.status = ctk.CTkLabel(self, text="")
         self.status.pack(pady=10)
 
-    def set_old_value(self, value):
-        self.old_value = value
+    def set_selected(self, value):
+        self.entry.delete(0, tk.END)
+        self.entry.insert(0, value)
 
     def add_item(self):
         new = self.entry.get().strip()
         if new:
             if self.db.add_type(new):
                 self.status.configure(text="Тип додано")
-                self.refresh()
-                self.entry.delete(0, tk.END)
-                self.old_value = None
+                self.local_refresh()
+                self.controller.refresh_pages()
             else:
                 self.status.configure(text="Тип вже існує")
 
     def update_item(self):
-        if self.old_value is None:
-            self.status.configure(text="Спочатку виберіть з списку")
-            return
+        old = self.combo.get()
         new = self.entry.get().strip()
-        if new:
-            if new != self.old_value:
-                self.db.update_type(self.old_value, new)
-                self.status.configure(text="Тип оновлено")
-                self.refresh()
-                self.entry.delete(0, tk.END)
-                self.old_value = None
-            else:
-                self.status.configure(text="Немає змін")
+        if old and new and old != new:
+            self.db.update_type(old, new)
+            self.status.configure(text="Тип оновлено")
+            self.local_refresh()
+            self.controller.refresh_pages()
+        elif old == new:
+            self.status.configure(text="Немає змін")
+        else:
+            self.status.configure(text="Виберіть тип та введіть нове ім'я")
 
     def delete_item(self):
-        if self.old_value is None:
-            self.status.configure(text="Спочатку виберіть з списку")
-            return
-        self.db.delete_type(self.old_value)
-        self.status.configure(text="Тип видалено")
-        self.refresh()
+        selected = self.combo.get()
+        if selected:
+            self.db.delete_type(selected)
+            self.status.configure(text="Тип видалено")
+            self.local_refresh()
+            self.controller.refresh_pages()
+        else:
+            self.status.configure(text="Виберіть тип")
+
+    def local_refresh(self):
+        self.combo.configure(values=self.db.get_all_types())
         self.entry.delete(0, tk.END)
-        self.old_value = None
 
     def refresh(self):
-        self.entry.completion_list = self.db.get_all_types()
-        self.controller.refresh_pages()
+        self.local_refresh()
 
 # --- Pages ---
 
@@ -729,11 +715,13 @@ class EquipmentListPage(ctk.CTkFrame):
         filter_frame.pack(fill="x", padx=10)
 
         ctk.CTkLabel(filter_frame, text="Кабінет:").pack(side="left", padx=5)
-        self.room_filter = AutoCompleteEntry(filter_frame, completion_list=self.db.get_all_rooms())
+        self.room_filter = ctk.CTkComboBox(filter_frame, values=['---'] + self.db.get_all_rooms())
+        self.room_filter.set('---')  # Встановлюємо початкове значення
         self.room_filter.pack(side="left", padx=5, fill="x", expand=True)
 
         ctk.CTkLabel(filter_frame, text="Власник:").pack(side="left", padx=5)
-        self.owner_filter = AutoCompleteEntry(filter_frame, completion_list=self.db.get_all_owners())
+        self.owner_filter = ctk.CTkComboBox(filter_frame, values=['---'] + self.db.get_all_owners())
+        self.owner_filter.set('---')  # Встановлюємо початкове значення
         self.owner_filter.pack(side="left", padx=5, fill="x", expand=True)
 
         btn_filter = ctk.CTkButton(filter_frame, text="Фільтрувати", command=self.apply_filter)
@@ -750,31 +738,27 @@ class EquipmentListPage(ctk.CTkFrame):
     def apply_filter(self):
         room = self.room_filter.get().strip()
         owner = self.owner_filter.get().strip()
-        self.current_filter = {'room': room, 'owner': owner}
+        # Ігноруємо значення '---' для фільтрації
+        self.current_filter = {
+            'room': room if room != '---' else None,
+            'owner': owner if owner != '---' else None
+        }
         self.refresh()
 
     def set_filter(self, room=None, owner=None):
-        if room:
-            self.room_filter.delete(0, tk.END)
-            self.room_filter.insert(0, room)
-        else:
-            self.room_filter.delete(0, tk.END)
-        if owner:
-            self.owner_filter.delete(0, tk.END)
-            self.owner_filter.insert(0, owner)
-        else:
-            self.owner_filter.delete(0, tk.END)
+        self.room_filter.set(room if room else '---')
+        self.owner_filter.set(owner if owner else '---')
         self.apply_filter()
 
     def clear_filter(self):
-        self.room_filter.delete(0, tk.END)
-        self.owner_filter.delete(0, tk.END)
+        self.room_filter.set('---')
+        self.owner_filter.set('---')
         self.current_filter = {}
         self.refresh()
 
     def refresh(self):
-        self.room_filter.completion_list = self.db.get_all_rooms()
-        self.owner_filter.completion_list = self.db.get_all_owners()
+        self.room_filter.configure(values=['---'] + self.db.get_all_rooms())
+        self.owner_filter.configure(values=['---'] + self.db.get_all_owners())
         for widget in self.results_list.winfo_children():
             widget.destroy()
         room = self.current_filter.get('room')
@@ -862,12 +846,12 @@ class EquipmentCardPage(ctk.CTkFrame):
 
         fields = [
             ("Інвентарний номер", "inventory_number", ctk.CTkEntry),
-            ("Тип", "type", AutoCompleteEntry),
+            ("Тип", "type", ctk.CTkComboBox),
             ("Назва", "name", ctk.CTkEntry),
             ("Модель", "model", ctk.CTkEntry),
             ("Серійний номер", "serial_number", ctk.CTkEntry),
-            ("Кабінет", "room", AutoCompleteEntry),
-            ("Власник", "owner", AutoCompleteEntry)
+            ("Кабінет", "room", ctk.CTkComboBox),
+            ("Власник", "owner", ctk.CTkComboBox)
         ]
 
         for label_text, field_key, widget_class in fields:
@@ -876,13 +860,16 @@ class EquipmentCardPage(ctk.CTkFrame):
                 field_frame.pack(fill="x", pady=(5, 5))
                 lbl = ctk.CTkLabel(field_frame, text=label_text)
                 lbl.pack(side="left", padx=5)
-                if widget_class == AutoCompleteEntry:
+                if widget_class == ctk.CTkComboBox:
                     if field_key == "type":
-                        ent = widget_class(field_frame, completion_list=self.db.get_all_types())
+                        ent = ctk.CTkComboBox(field_frame, values=[''] + self.db.get_all_types())
+                        ent.set('')
                     elif field_key == "room":
-                        ent = widget_class(field_frame, completion_list=self.db.get_all_rooms())
+                        ent = ctk.CTkComboBox(field_frame, values=[''] + self.db.get_all_rooms())
+                        ent.set('')
                     elif field_key == "owner":
-                        ent = widget_class(field_frame, completion_list=self.db.get_all_owners())
+                        ent = ctk.CTkComboBox(field_frame, values=[''] + self.db.get_all_owners())
+                        ent.set('')
                 else:
                     ent = widget_class(field_frame)
                 ent.pack(side="left", fill="x", expand=True)
@@ -923,8 +910,13 @@ class EquipmentCardPage(ctk.CTkFrame):
             self.status.configure(text="Обладнання не знайдено")
             return
         for key in self.entries:
-            self.entries[key].delete(0, tk.END)
-            self.entries[key].insert(0, row[key] or '')
+            widget = self.entries[key]
+            value = row[key] or ''
+            if isinstance(widget, ctk.CTkComboBox):
+                widget.set(value)
+            else:
+                widget.delete(0, tk.END)
+                widget.insert(0, value)
 
     def collect_data(self):
         data = {key: self.entries[key].get().strip() for key in self.entries}
@@ -963,160 +955,222 @@ class EquipmentCardPage(ctk.CTkFrame):
         self.controller.switch_page("MainMenu")
 
     def refresh(self):
-        self.entries['type'].completion_list = self.db.get_all_types()
-        self.entries['room'].completion_list = self.db.get_all_rooms()
-        self.entries['owner'].completion_list = self.db.get_all_owners()
+        self.entries['type'].configure(values=[''] + self.db.get_all_types())
+        self.entries['room'].configure(values=[''] + self.db.get_all_rooms())
+        self.entries['owner'].configure(values=[''] + self.db.get_all_owners())
         if self.current_id:
             self.load_equipment(self.current_id)
 
 
 class AddPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
-        super().__init__(parent)
-        self.controller = controller
-        self.db = controller.db
+        try:
+            super().__init__(parent)
+            self.controller = controller
+            self.db = controller.db
 
-        nav_frame = ctk.CTkFrame(self)
-        nav_frame.pack(fill="x", pady=10)
+            nav_frame = ctk.CTkFrame(self)
+            nav_frame.pack(fill="x", pady=10)
 
-        btn_back = ctk.CTkButton(nav_frame, text="← Назад", command=lambda: controller.switch_page("MainMenu"))
-        btn_back.pack(side="left", padx=20)
+            btn_back = ctk.CTkButton(nav_frame, text="← Назад", command=lambda: controller.switch_page("MainMenu"))
+            btn_back.pack(side="left", padx=20)
 
-        btn_home = ctk.CTkButton(nav_frame, text="Головна", command=lambda: controller.switch_page("MainMenu"))
-        btn_home.pack(side="left", padx=20)
+            btn_home = ctk.CTkButton(nav_frame, text="Головна", command=lambda: controller.switch_page("MainMenu"))
+            btn_home.pack(side="left", padx=20)
 
-        lbl = ctk.CTkLabel(self, text="Додавання нового обладнання", font=ctk.CTkFont(size=18, weight="bold"))
-        lbl.pack(pady=10)
+            lbl = ctk.CTkLabel(self, text="Додавання нового обладнання", font=ctk.CTkFont(size=18, weight="bold"))
+            lbl.pack(pady=10)
 
-        container = ctk.CTkFrame(self)
-        container.pack(fill="both", expand=True, padx=20, pady=10)
+            container = ctk.CTkFrame(self)
+            container.pack(fill="both", expand=True, padx=20, pady=10)
 
-        self.entries = {}
+            self.entries = {}
 
-        fields = [
-            ("Інвентарний номер", "inventory_number", ctk.CTkEntry),
-            ("Тип", "type", AutoCompleteEntry),
-            ("Назва", "name", ctk.CTkEntry),
-            ("Модель", "model", ctk.CTkEntry),
-            ("Серійний номер", "serial_number", ctk.CTkEntry),
-            ("Кабінет", "room", AutoCompleteEntry),
-            ("Власник", "owner", AutoCompleteEntry)
-        ]
+            fields = [
+                ("Інвентарний номер", "inventory_number", ctk.CTkEntry),
+                ("Тип", "type", ctk.CTkComboBox),
+                ("Назва", "name", ctk.CTkEntry),
+                ("Модель", "model", ctk.CTkEntry),
+                ("Серійний номер", "serial_number", ctk.CTkEntry),
+                ("Кабінет", "room", ctk.CTkComboBox),
+                ("Власник", "owner", ctk.CTkComboBox)
+            ]
 
-        for label_text, field_key, widget_class in fields:
-            if field_key in ["type", "room", "owner"]:
-                field_frame = ctk.CTkFrame(container)
-                field_frame.pack(fill="x", pady=(5, 5))
-                lbl = ctk.CTkLabel(field_frame, text=label_text)
-                lbl.pack(side="left", padx=5)
-                if widget_class == AutoCompleteEntry:
+            for label_text, field_key, widget_class in fields:
+                if field_key in ["type", "room", "owner"]:
+                    field_frame = ctk.CTkFrame(container)
+                    field_frame.pack(fill="x", pady=(5, 5))
+                    lbl = ctk.CTkLabel(field_frame, text=label_text)
+                    lbl.pack(side="left", padx=5)
+                    if widget_class == ctk.CTkComboBox:
+                        if field_key == "type":
+                            types = [''] + self.db.get_all_types()
+                            ent = ctk.CTkComboBox(field_frame, values=types)
+                            ent.set('')
+                        elif field_key == "room":
+                            rooms = [''] + self.db.get_all_rooms()
+                            ent = ctk.CTkComboBox(field_frame, values=rooms)
+                            ent.set('')
+                        elif field_key == "owner":
+                            owners = [''] + self.db.get_all_owners()
+                            ent = ctk.CTkComboBox(field_frame, values=owners)
+                            ent.set('')
+                    else:
+                        ent = widget_class(field_frame)
+                    ent.pack(side="left", fill="x", expand=True)
                     if field_key == "type":
-                        ent = widget_class(field_frame, completion_list=self.db.get_all_types())
+                        page = "TypesManagementPage"
                     elif field_key == "room":
-                        ent = widget_class(field_frame, completion_list=self.db.get_all_rooms())
+                        page = "RoomsManagementPage"
                     elif field_key == "owner":
-                        ent = widget_class(field_frame, completion_list=self.db.get_all_owners())
+                        page = "OwnersManagementPage"
+                    btn = ctk.CTkButton(field_frame, text="Керувати", width=100, 
+                                       command=lambda p=page: self.open_management_page(p))
+                    btn.pack(side="left", padx=5)
                 else:
-                    ent = widget_class(field_frame)
-                ent.pack(side="left", fill="x", expand=True)
-                if field_key == "type":
-                    page = "TypesManagementPage"
-                elif field_key == "room":
-                    page = "RoomsManagementPage"
-                elif field_key == "owner":
-                    page = "OwnersManagementPage"
-                btn = ctk.CTkButton(field_frame, text="Керувати", width=100, command=lambda p=page: self.controller.switch_page(p))
-                btn.pack(side="left", padx=5)
-            else:
-                lbl = ctk.CTkLabel(container, text=label_text)
-                lbl.pack(anchor="w", pady=(5,0))
-                ent = widget_class(container)
-                ent.pack(fill="x")
-            self.entries[field_key] = ent
+                    lbl = ctk.CTkLabel(container, text=label_text)
+                    lbl.pack(anchor="w", pady=(5,0))
+                    ent = widget_class(container)
+                    ent.pack(fill="x")
+                self.entries[field_key] = ent
 
-        btn_add = ctk.CTkButton(self, text="Додати", command=self.add_equipment)
-        btn_add.pack(pady=10)
+            btn_add = ctk.CTkButton(self, text="Додати", command=self.add_equipment)
+            btn_add.pack(pady=10)
 
-        self.status = ctk.CTkLabel(self, text="")
-        self.status.pack(pady=10)
+            self.status = ctk.CTkLabel(self, text="")
+            self.status.pack(pady=10)
+
+            print("AddPage initialized successfully")
+        except Exception as e:
+            print(f"Error initializing AddPage: {str(e)}")
+            self.status = ctk.CTkLabel(self, text=f"Помилка ініціалізації: {str(e)}")
+            self.status.pack(pady=10)
+
+    def open_management_page(self, page_name):
+        try:
+            print(f"Opening management page: {page_name}")
+            self.controller.switch_page(page_name)
+        except Exception as e:
+            print(f"Error opening management page {page_name}: {str(e)}")
+            self.status.configure(text=f"Помилка відкриття сторінки керування: {str(e)}")
 
     def add_equipment(self):
-        data = {key: self.entries[key].get().strip() for key in self.entries}
-        data['written_off'] = 0
-        if data['inventory_number'] == "":
-            self.status.configure(text="Інвентарний номер обов'язковий")
-            return
-        if self.db.add_equipment(data):
-            self.status.configure(text="Обладнання додано")
-            self.controller.refresh_pages()
-            self.clear_form()
-        else:
-            self.status.configure(text="Обладнання з таким інвентарним номером вже існує")
+        try:
+            data = {key: self.entries[key].get().strip() for key in self.entries}
+            data['written_off'] = 0
+            if data['inventory_number'] == "":
+                self.status.configure(text="Інвентарний номер обов'язковий")
+                return
+            if self.db.add_equipment(data):
+                self.status.configure(text="Обладнання додано")
+                self.controller.refresh_pages()
+                self.clear_form()
+                print("Equipment added successfully")
+            else:
+                self.status.configure(text="Обладнання з таким інвентарним номером вже існує")
+        except Exception as e:
+            print(f"Error in add_equipment: {str(e)}")
+            self.status.configure(text=f"Помилка додавання обладнання: {str(e)}")
 
     def clear_form(self):
-        for widget in self.entries.values():
-            widget.delete(0, tk.END)
+        try:
+            for widget in self.entries.values():
+                if isinstance(widget, ctk.CTkComboBox):
+                    widget.set('')
+                else:
+                    widget.delete(0, tk.END)
+            print("Form cleared")
+        except Exception as e:
+            print(f"Error in clear_form: {str(e)}")
+            self.status.configure(text=f"Помилка очищення форми: {str(e)}")
 
     def refresh(self):
-        self.entries['type'].completion_list = self.db.get_all_types()
-        self.entries['room'].completion_list = self.db.get_all_rooms()
-        self.entries['owner'].completion_list = self.db.get_all_owners()
-
+        try:
+            self.entries['type'].configure(values=[''] + self.db.get_all_types())
+            self.entries['room'].configure(values=[''] + self.db.get_all_rooms())
+            self.entries['owner'].configure(values=[''] + self.db.get_all_owners())
+            print("AddPage refreshed")
+        except Exception as e:
+            print(f"Error in refresh: {str(e)}")
+            self.status.configure(text=f"Помилка оновлення: {str(e)}")
 
 # --- App Class ---
 
 class App(ctk.CTk):
     def __init__(self):
-        super().__init__()
-        self.title("Inventory Manager")
-        self.geometry("900x600")
-        self.minsize(900, 600)
+        try:
+            super().__init__()
+            self.title("Inventory Manager")
+            self.geometry("900x600")
+            self.minsize(900, 600)
 
-        # Меню бар
-        menubar = tk.Menu(self)
-        settings_menu = tk.Menu(menubar, tearoff=0)
-        settings_menu.add_command(label="Імпорт з Excel", command=self.import_excel)
-        settings_menu.add_command(label="Керування кабінетами", command=lambda: self.switch_page("RoomsManagementPage"))
-        settings_menu.add_command(label="Керування власниками", command=lambda: self.switch_page("OwnersManagementPage"))
-        settings_menu.add_command(label="Керування типами", command=lambda: self.switch_page("TypesManagementPage"))
-        settings_menu.add_separator()
-        settings_menu.add_command(label="Вихід", command=self.quit)
-        menubar.add_cascade(label="Налаштування", menu=settings_menu)
+            # Меню бар
+            menubar = tk.Menu(self)
+            settings_menu = tk.Menu(menubar, tearoff=0)
+            settings_menu.add_command(label="Імпорт з Excel", command=self.import_excel)
+            settings_menu.add_command(label="Керування кабінетами", 
+                                    command=lambda: self.switch_page("RoomsManagementPage"))
+            settings_menu.add_command(label="Керування власниками", 
+                                    command=lambda: self.switch_page("OwnersManagementPage"))
+            settings_menu.add_command(label="Керування типами", 
+                                    command=lambda: self.switch_page("TypesManagementPage"))
+            settings_menu.add_separator()
+            settings_menu.add_command(label="Вихід", command=self.quit)
+            menubar.add_cascade(label="Налаштування", menu=settings_menu)
 
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="Про програму", command=self.show_about)
-        menubar.add_cascade(label="Довідка", menu=help_menu)
+            help_menu = tk.Menu(menubar, tearoff=0)
+            help_menu.add_command(label="Про програму", command=self.show_about)
+            menubar.add_cascade(label="Довідка", menu=help_menu)
 
-        account_menu = tk.Menu(menubar, tearoff=0)
-        account_menu.add_command(label="Вийти", command=self.quit)
-        menubar.add_cascade(label="Акаунт", menu=account_menu)
+            account_menu = tk.Menu(menubar, tearoff=0)
+            account_menu.add_command(label="Вийти", command=self.quit)
+            menubar.add_cascade(label="Акаунт", menu=account_menu)
 
-        self.config(menu=menubar)
+            self.config(menu=menubar)
 
-        self.db = Database()
+            self.db = Database()
 
-        container = ctk.CTkFrame(self)
-        container.pack(fill="both", expand=True)
-        container.grid_rowconfigure(0, weight=1)
-        container.grid_columnconfigure(0, weight=1)
+            container = ctk.CTkFrame(self)
+            container.pack(fill="both", expand=True)
+            container.grid_rowconfigure(0, weight=1)
+            container.grid_columnconfigure(0, weight=1)
 
-        self.frames = {}
-        for F in (MainMenu, SearchPage, EquipmentListPage, WrittenOffPage, EquipmentCardPage, AddPage, RoomsManagementPage, OwnersManagementPage, TypesManagementPage):
-            page_name = F.__name__
-            frame = F(parent=container, controller=self)
-            frame.grid(row=0, column=0, sticky="nsew")
-            self.frames[page_name] = frame
+            self.frames = {}
+            for F in (MainMenu, SearchPage, EquipmentListPage, WrittenOffPage, EquipmentCardPage, AddPage, 
+                    RoomsManagementPage, OwnersManagementPage, TypesManagementPage):
+                page_name = F.__name__
+                frame = F(parent=container, controller=self)
+                frame.grid(row=0, column=0, sticky="nsew")
+                self.frames[page_name] = frame
+                print(f"Frame {page_name} created")
 
-        self.switch_page("MainMenu")
+            self.switch_page("MainMenu")
+            print("App initialized successfully")
+        except Exception as e:
+            print(f"Error initializing App: {str(e)}")
+            messagebox.showerror("Помилка", f"Помилка ініціалізації програми: {str(e)}")
 
     def switch_page(self, page_name):
-        frame = self.frames[page_name]
-        frame.tkraise()
-        if hasattr(frame, "refresh"):
-            frame.refresh()
+        try:
+            print(f"Attempting to switch to page: {page_name}")
+            if page_name not in self.frames:
+                print(f"Error: Page {page_name} not found in self.frames")
+                messagebox.showerror("Помилка", f"Сторінка {page_name} не знайдена")
+                return
+            frame = self.frames[page_name]
+            frame.tkraise()
+            if hasattr(frame, "refresh"):
+                print(f"Calling refresh for {page_name}")
+                frame.refresh()
+            print(f"Successfully switched to {page_name}")
+        except Exception as e:
+            print(f"Error switching to page {page_name}: {str(e)}")
+            messagebox.showerror("Помилка", f"Не вдалося відкрити сторінку {page_name}: {str(e)}")
 
     def refresh_pages(self, pages=None):
-        for frame in self.frames.values():
+        if pages is None:
+            pages = self.frames.values()
+        for frame in pages:
             if hasattr(frame, "refresh"):
                 frame.refresh()
 
@@ -1141,3 +1195,7 @@ if __name__ == "__main__":
     db.unify_types_in_db()
     app = App()
     app.mainloop()
+
+'''
+# Тут типу замітка на майбутнє :)
+'''
