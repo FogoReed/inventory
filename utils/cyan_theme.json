@@ -1,0 +1,25 @@
+{
+    "CTk": {
+        "fg_color": ["#FFFFFF", "#2B2B2B"]
+    },
+    "CTkButton": {
+        "fg_color": ["#00CED1", "#00A1A3"],
+        "hover_color": ["#33E0E3", "#22C3C6"],
+        "text_color": ["#000000", "#FFFFFF"]
+    },
+    "CTkLabel": {
+        "fg_color": ["transparent", "transparent"],
+        "text_color": ["#000000", "#FFFFFF"]
+    },
+    "CTkOptionMenu": {
+        "fg_color": ["#00CED1", "#00A1A3"],
+        "button_color": ["#00BEBF", "#009192"],
+        "button_hover_color": ["#33E0E3", "#22C3C6"],
+        "text_color": ["#000000", "#FFFFFF"]
+    },
+    "CTkEntry": {
+        "fg_color": ["#FFFFFF", "#3B3B3B"],
+        "border_color": ["#00CED1", "#00A1A3"],
+        "text_color": ["#000000", "#FFFFFF"]
+    }
+}
