@@ -217,10 +217,10 @@ class Database:
             for _, row in df.iterrows():
                 try:
                     inv_num = str(row.get('Інвентарний номер') or '').strip()
-                    raw_type = str(row.get('Тип обладнання') or '?').strip().lower()
+                    raw_type = str(row.get('Тип обладнення') or '?').strip().lower()
                     logging.debug(f"Raw type from Excel for inv_num {inv_num}: {raw_type}")
                     equip_type = self.get_main_type(raw_type) or "Невідомо"
-                    name = str(row.get('Назва обладнання') or row.get('Назва') or '').strip()
+                    name = str(row.get('Назва обладнення') or row.get('Назва') or '').strip()
                     model = str(row.get('Модель') or '').strip()
                     serial = str(row.get('Серійний номер') or row.get('Серійний №') or '').strip()
                     room = str(row.get('Кабінет') or '').strip()
