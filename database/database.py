@@ -481,11 +481,18 @@ class Database:
         c = self.conn.cursor()
         c.execute("SELECT appearance_mode, color_theme FROM settings WHERE id=1")
         row = c.fetchone()
-        return {'appearance_mode': row['appearance_mode'], 'color_theme': row['color_theme']} if row else {'appearance_mode': 'system', 'color_theme': 'blue'}
+        default_settings = {'appearance_mode': 'system', 'color_theme': 'blue'}
+        if row:
+            settings = {'appearance_mode': row['appearance_mode'], 'color_theme': row['color_theme']}
+            if settings['color_theme'] not in ["blue", "dark-blue", "green"]:
+                settings['color_theme'] = 'blue'
+                self.update_settings(settings['appearance_mode'], 'blue')
+            return settings
+        return default_settings
 
     def update_settings(self, appearance_mode, color_theme):
         valid_appearance_modes = ["light", "dark", "system"]
-        valid_color_themes = ["blue", "dark-blue", "green", "red", "purple", "orange", "cyan", "yellow"]
+        valid_color_themes = ["blue", "dark-blue", "green"]
         if appearance_mode not in valid_appearance_modes:
             logging.error(f"Invalid appearance_mode: {appearance_mode}")
             raise ValueError(f"Невалідний режим відображення: {appearance_mode}")
