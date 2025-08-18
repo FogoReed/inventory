@@ -8,6 +8,7 @@ class EquipmentListPage(ctk.CTkFrame):
         self.controller = controller
         self.db = controller.db
         self.current_room = None
+        self.equipment_buttons = []  # Список для зберігання кнопок
         logging.debug("Initializing EquipmentListPage")
         self.create_widgets()
         logging.debug("Frame created: EquipmentListPage")
@@ -33,8 +34,10 @@ class EquipmentListPage(ctk.CTkFrame):
                                               command=self.update_list)
         self.owner_filter.grid(row=0, column=3, padx=5)
 
-        self.equipment_listbox = ctk.CTkTextbox(self, width=600, height=400)
-        self.equipment_listbox.grid(row=1, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
+        # Створюємо прокручуваний фрейм для кнопок
+        self.scrollable_frame = ctk.CTkScrollableFrame(self, width=600, height=400)
+        self.scrollable_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
+        self.scrollable_frame.grid_columnconfigure(0, weight=1)
 
         self.button_frame = ctk.CTkFrame(self)
         self.button_frame.grid(row=2, column=0, columnspan=2, pady=10)
@@ -66,43 +69,59 @@ class EquipmentListPage(ctk.CTkFrame):
 
     def update_list(self, *args):
         try:
-            self.equipment_listbox.delete("0.0", "end")
+            # Очищаємо попередні кнопки
+            for button in self.equipment_buttons:
+                button.destroy()
+            self.equipment_buttons.clear()
+
+            # Отримуємо список обладнання
             equipment = self.db.filter_equipment(room=self.current_room or self.room_filter_var.get(),
                                                  owner=self.owner_filter_var.get())
-            for item in equipment:
-                text = f"ID: {item['id']} | {item['inventory_number']} | {item['type']} | {item['name']} | {item['room']} | {item['owner']}\n"
-                self.equipment_listbox.insert("end", text)
+            
+            # Створюємо кнопку для кожного елемента обладнання
+            for index, item in enumerate(equipment):
+                button_text = f"{item['inventory_number']} | {item['type']} | {item['name']} | {item['room']} | {item['owner']}"
+                button = ctk.CTkButton(
+                    master=self.scrollable_frame,
+                    text=button_text,
+                    command=lambda equip_id=item['id']: self.view_equipment(equip_id)
+                )
+                button.grid(row=index, column=0, padx=5, pady=5, sticky="ew")
+                self.equipment_buttons.append(button)
+
             logging.debug("Equipment list updated")
         except Exception as e:
             logging.error(f"Error updating equipment list: {e}")
 
-    def view_selected(self):
+    def view_equipment(self, equip_id):
+        """Функція для перегляду обладнання за ID"""
         try:
-            selected = self.equipment_listbox.get("sel.first", "sel.last")
-            equip_id = int(selected.split(" | ")[0].split(": ")[1])
             self.controller.frames["EquipmentCardPage"].load_equipment(equip_id)
             self.controller.switch_page("EquipmentCardPage")
+        except Exception as e:
+            logging.error(f"Error in view_equipment: {e}")
+            messagebox.showerror("Помилка", "Не вдалося відкрити картку обладнання")
+
+    def view_selected(self):
+        try:
+            # Якщо потрібно підтримувати вибір через виділення, додайте логіку
+            messagebox.showinfo("Інформація", "Вибір через кнопки, а не текст")
         except Exception as e:
             logging.error(f"Error in view_selected: {e}")
             messagebox.showerror("Помилка", "Оберіть обладнання зі списку")
 
     def edit_selected(self):
         try:
-            selected = self.equipment_listbox.get("sel.first", "sel.last")
-            equip_id = int(selected.split(" | ")[0].split(": ")[1])
-            self.controller.frames["AddPage"].load_equipment(equip_id)
-            self.controller.switch_page("AddPage")
+            # Аналогічно для редагування
+            messagebox.showinfo("Інформація", "Виберіть обладнання через кнопку")
         except Exception as e:
             logging.error(f"Error in edit_selected: {e}")
             messagebox.showerror("Помилка", "Оберіть обладнання зі списку")
 
     def write_off_selected(self):
         try:
-            selected = self.equipment_listbox.get("sel.first", "sel.last")
-            equip_id = int(selected.split(" | ")[0].split(": ")[1])
-            self.db.write_off_equipment(equip_id)
-            self.update_list()
-            messagebox.showinfo("Успіх", "Обладнання списано")
+            # Аналогічно для списання
+            messagebox.showinfo("Інформація", "Виберіть обладнання через кнопку")
         except Exception as e:
             logging.error(f"Error in write_off_selected: {e}")
             messagebox.showerror("Помилка", "Оберіть обладнання зі списку")
