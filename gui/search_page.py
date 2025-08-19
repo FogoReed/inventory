@@ -1,5 +1,6 @@
 import logging
 import customtkinter as ctk
+from tkinter import messagebox
 
 class SearchPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -24,6 +25,7 @@ class SearchPage(ctk.CTkFrame):
         self.search_entry = ctk.CTkEntry(self, textvariable=self.search_var, placeholder_text="Введіть інвентарний номер або назву")
         self.search_entry.pack(pady=5, padx=20, fill="x")
         self.search_var.trace_add("write", self.on_text_change)
+        self.search_entry.bind("<KeyRelease>", lambda event: self.on_text_change())
 
         self.results_frame = ctk.CTkFrame(self)
         self.results_frame.pack(pady=10, fill="both", expand=True)
@@ -32,25 +34,34 @@ class SearchPage(ctk.CTkFrame):
         self.results_list.pack(fill="both", expand=True)
 
         self.current_results = []
+        self.on_text_change()  # Виклик для початкового оновлення
+        logging.debug("SearchPage initialized successfully")
 
     def on_text_change(self, *args):
         text = self.search_var.get().strip()
+        logging.debug(f"Search query entered: {text}")
         self.update_results(text)
 
     def update_results(self, text):
         for widget in self.results_list.winfo_children():
             widget.destroy()
         if text == "":
+            logging.debug("Search query is empty, cleared results")
             return
-        rows = self.db.search_equipment(text)
-        self.current_results = rows
-        for r in rows:
-            btn = ctk.CTkButton(self.results_list,
-                                text=f"{r['inventory_number']} — {r['name']} ({r['type']})\n{r['room']} | {r['owner']}",
-                                anchor="w",
-                                height=60,
-                                command=lambda rid=r['id']: self.open_equipment_card(rid))
-            btn.pack(pady=5, padx=10, fill="x")
+        try:
+            rows = self.db.search_equipment(text)
+            self.current_results = rows
+            logging.debug(f"Search returned {len(rows)} results for query: {text}")
+            for r in rows:
+                btn = ctk.CTkButton(self.results_list,
+                                    text=f"{r['inventory_number']} — {r['name']} ({r['type']})\n{r['room']} | {r['owner']}",
+                                    anchor="w",
+                                    height=60,
+                                    command=lambda rid=r['id']: self.open_equipment_card(rid))
+                btn.pack(pady=5, padx=10, fill="x")
+        except Exception as e:
+            logging.error(f"Error in update_results: {e}")
+            messagebox.showerror("Помилка", f"Помилка пошуку: {str(e)}")
 
     def open_equipment_card(self, equip_id):
         eq_page = self.controller.frames["EquipmentCardPage"]

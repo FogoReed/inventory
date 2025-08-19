@@ -1,11 +1,10 @@
 import sqlite3
 import logging
 import pandas as pd
-
-DB_PATH = "inventory.db"
+from config import LOCAL_DB_PATH
 
 class Database:
-    def __init__(self, db_path=DB_PATH):
+    def __init__(self, db_path=LOCAL_DB_PATH):
         logging.debug("Initializing Database")
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -102,25 +101,54 @@ class Database:
             ("ups", "Джерело безперебійного живлення"),
             ("uninterruptible power supply", "Джерело безперебійного живлення")
         ]
-        for synonym, main_type in synonyms:
-            self.ensure_type(main_type)
-            c.execute("SELECT synonym FROM type_synonyms WHERE synonym=? AND main_type=?", (synonym, main_type))
-            if not c.fetchone():
-                c.execute("INSERT INTO type_synonyms (synonym, main_type) VALUES (?, ?)", (synonym, main_type))
-                logging.debug(f"Added synonym: {synonym} -> {main_type}")
-        self.conn.commit()
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            for synonym, main_type in synonyms:
+                if main_type not in self.get_all_types():
+                    self.add_type_no_transaction(main_type)
+                c.execute("SELECT synonym FROM type_synonyms WHERE synonym=? AND main_type=?", (synonym, main_type))
+                if not c.fetchone():
+                    c.execute("INSERT INTO type_synonyms (synonym, main_type) VALUES (?, ?)", (synonym, main_type))
+                    logging.debug(f"Added synonym: {synonym} -> {main_type}")
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in populate_synonyms: {e}")
+            raise e
 
     def populate_types(self):
         c = self.conn.cursor()
-        c.execute("SELECT DISTINCT main_type FROM type_synonyms")
-        types = [row['main_type'] for row in c.fetchall()]
-        for t in types:
-            self.ensure_type(t)
-        self.conn.commit()
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            c.execute("SELECT DISTINCT main_type FROM type_synonyms")
+            types = [row['main_type'] for row in c.fetchall()]
+            for t in types:
+                if t not in self.get_all_types():
+                    self.add_type_no_transaction(t)
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in populate_types: {e}")
+            raise e
+
+    def add_type_no_transaction(self, type_name):
+        """Додавання типу без створення нової транзакції"""
+        c = self.conn.cursor()
+        try:
+            c.execute("INSERT INTO equipment_types (type_name) VALUES (?)", (type_name,))
+            logging.debug(f"Type added (no transaction): {type_name}")
+            return True
+        except sqlite3.IntegrityError:
+            logging.error(f"Type already exists: {type_name}")
+            return False
+        except Exception as e:
+            logging.error(f"Error in add_type_no_transaction: {e}")
+            raise e
 
     def add_equipment(self, data):
         c = self.conn.cursor()
         try:
+            self.conn.execute("BEGIN TRANSACTION")
             equip_type = self.get_main_type(data['type'].lower()) or "Невідомо"
             if data['room'] and not self.check_room_capacity(data['room']):
                 raise ValueError(f"Кабінет {data['room']} перевищує максимальну кількість місць")
@@ -137,15 +165,22 @@ class Database:
             logging.debug(f"Equipment added: {data['inventory_number']} with type: {equip_type}")
             return True
         except sqlite3.IntegrityError as e:
+            self.conn.rollback()
             logging.error(f"IntegrityError in add_equipment: {e}")
             return False
         except ValueError as e:
+            self.conn.rollback()
             logging.error(f"ValueError in add_equipment: {e}")
+            raise e
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in add_equipment: {e}")
             raise e
 
     def update_equipment(self, equip_id, data):
         c = self.conn.cursor()
         try:
+            self.conn.execute("BEGIN TRANSACTION")
             equip_type = self.get_main_type(data['type'].lower()) or data['type']
             if data['room'] and not self.check_room_capacity(data['room']):
                 raise ValueError(f"Кабінет {data['room']} перевищує максимальну кількість місць")
@@ -160,7 +195,12 @@ class Database:
             self.conn.commit()
             logging.debug(f"Equipment updated: ID {equip_id}")
         except ValueError as e:
+            self.conn.rollback()
             logging.error(f"ValueError in update_equipment: {e}")
+            raise e
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in update_equipment: {e}")
             raise e
 
     def get_equipment_by_id(self, equip_id):
@@ -168,14 +208,33 @@ class Database:
         c.execute('SELECT * FROM equipment WHERE id=?', (equip_id,))
         return c.fetchone()
 
-    def search_equipment(self, text):
+    def search_equipment(self, query):
         c = self.conn.cursor()
-        text = f'%{text}%'
-        c.execute('''
-        SELECT * FROM equipment WHERE (inventory_number LIKE ? OR name LIKE ? OR model LIKE ? OR serial_number LIKE ?)
-        AND written_off=0
-        ''', (text, text, text, text))
-        return c.fetchall()
+        try:
+            query = f"%{query}%"
+            c.execute('''
+                SELECT id, inventory_number, type, name, model, serial_number, room, owner
+                FROM equipment
+                WHERE written_off = 0
+                AND (inventory_number LIKE ? OR type LIKE ? OR name LIKE ? OR model LIKE ? OR serial_number LIKE ? OR room LIKE ? OR owner LIKE ?)
+            ''', (query, query, query, query, query, query, query))
+            results = [
+                {
+                    'id': row[0],
+                    'inventory_number': row[1],
+                    'type': row[2],
+                    'name': row[3],
+                    'model': row[4],
+                    'serial_number': row[5],
+                    'room': row[6],
+                    'owner': row[7]
+                } for row in c.fetchall()
+            ]
+            logging.debug(f"Database search returned {len(results)} results for query: {query}")
+            return results
+        except Exception as e:
+            logging.error(f"Error in search_equipment: {e}")
+            raise e
 
     def filter_equipment(self, room=None, owner=None, show_written_off=False):
         c = self.conn.cursor()
@@ -202,77 +261,107 @@ class Database:
 
     def write_off_equipment(self, equip_id):
         c = self.conn.cursor()
-        c.execute('UPDATE equipment SET written_off=1 WHERE id=?', (equip_id,))
-        self.conn.commit()
-        logging.debug(f"Equipment written off: ID {equip_id}")
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            c.execute('UPDATE equipment SET written_off=1 WHERE id=?', (equip_id,))
+            self.conn.commit()
+            logging.debug(f"Equipment written off: ID {equip_id}")
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in write_off_equipment: {e}")
+            raise e
 
     def import_from_excel(self, filepath):
         xls = pd.ExcelFile(filepath)
         c = self.conn.cursor()
         imported = 0
-        for sheet in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet)
-            df.columns = [col.strip() for col in df.columns]
-            logging.debug(f"Excel columns: {list(df.columns)}")
-            for _, row in df.iterrows():
-                try:
-                    inv_num = str(row.get('Інвентарний номер') or '').strip()
-                    raw_type = str(row.get('Тип обладнення') or '?').strip().lower()
-                    logging.debug(f"Raw type from Excel for inv_num {inv_num}: {raw_type}")
-                    equip_type = self.get_main_type(raw_type) or "Невідомо"
-                    name = str(row.get('Назва обладнення') or row.get('Назва') or '').strip()
-                    model = str(row.get('Модель') or '').strip()
-                    serial = str(row.get('Серійний номер') or row.get('Серійний №') or '').strip()
-                    room = str(row.get('Кабінет') or '').strip()
-                    owner = str(row.get('Власник') or '').strip()
-                    if not inv_num:
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            logging.debug("Started transaction for Excel import")
+            for sheet in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet)
+                df.columns = [col.strip() for col in df.columns]
+                logging.debug(f"Excel columns: {list(df.columns)}")
+                for _, row in df.iterrows():
+                    try:
+                        inv_num = str(row.get('Інвентарний номер') or '').strip()
+                        if not inv_num:
+                            logging.warning(f"Skipped row in Excel: no inventory_number")
+                            continue
+                        raw_type = str(row.get('Тип обладнення') or '?').strip().lower()
+                        logging.debug(f"Raw type from Excel for inv_num {inv_num}: {raw_type}")
+                        equip_type = self.get_main_type(raw_type) or "Невідомо"
+                        name = str(row.get('Назва обладнення') or row.get('Назва') or '').strip()
+                        model = str(row.get('Модель') or '').strip()
+                        serial = str(row.get('Серійний номер') or row.get('Серійний №') or '').strip()
+                        room = str(row.get('Кабінет') or '').strip()
+                        owner = str(row.get('Власник') or '').strip()
+                        if owner.lower() == 'nan':
+                            owner = ''
+                        if room and not self.check_room_capacity(room):
+                            raise ValueError(f"Кабінет {room} перевищує максимальну кількість місць")
+                        self.ensure_type(equip_type)
+                        self.ensure_room(room)
+                        self.ensure_owner(owner)
+                        c.execute('SELECT id FROM equipment WHERE inventory_number=?', (inv_num,))
+                        exist = c.fetchone()
+                        if exist:
+                            c.execute('''
+                            UPDATE equipment SET type=?, name=?, model=?, serial_number=?, room=?, owner=?
+                            WHERE inventory_number=?
+                            ''', (equip_type, name, model, serial, room, owner, inv_num))
+                        else:
+                            c.execute('''
+                            INSERT INTO equipment (inventory_number, type, name, model, serial_number, room, owner, written_off)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                            ''', (inv_num, equip_type, name, model, serial, room, owner))
+                        imported += 1
+                        logging.debug(f"Imported equipment: {inv_num} with type: {equip_type}")
+                    except ValueError as e:
+                        logging.error(f"ValueError in import_from_excel for inv_num {inv_num}: {e}")
                         continue
-                    if room and not self.check_room_capacity(room):
-                        raise ValueError(f"Кабінет {room} перевищує максимальну кількість місць")
-                    self.ensure_type(equip_type)
-                    self.ensure_room(room)
-                    self.ensure_owner(owner)
-                    c.execute('SELECT id FROM equipment WHERE inventory_number=?', (inv_num,))
-                    exist = c.fetchone()
-                    if exist:
-                        c.execute('''
-                        UPDATE equipment SET type=?, name=?, model?, serial_number=?, room=?, owner=?
-                        WHERE inventory_number=?
-                        ''', (equip_type, name, model, serial, room, owner, inv_num))
-                    else:
-                        c.execute('''
-                        INSERT INTO equipment (inventory_number, type, name, model, serial_number, room, owner, written_off)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-                        ''', (inv_num, equip_type, name, model, serial, room, owner))
-                    imported += 1
-                    logging.debug(f"Imported equipment: {inv_num} with type: {equip_type}")
-                except ValueError as e:
-                    logging.error(f"ValueError in import_from_excel: {e}")
-                except Exception as e:
-                    logging.error(f"Error in import_from_excel: {e}")
+                    except Exception as e:
+                        logging.error(f"Error in import_from_excel for inv_num {inv_num}: {e}")
+                        raise e
             self.conn.commit()
-        self.unify_types_in_db()
-        logging.debug(f"Imported {imported} records from Excel")
-        return imported
+            self.unify_types_in_db()
+            logging.debug(f"Imported {imported} records from Excel")
+            return imported
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in import_from_excel: {e}")
+            raise e
 
     def unify_types_in_db(self):
         c = self.conn.cursor()
-        c.execute("SELECT synonym, main_type FROM type_synonyms")
-        for row in c.fetchall():
-            c.execute('UPDATE equipment SET type=? WHERE LOWER(type)=?', (row['main_type'], row['synonym'].lower()))
-        self.conn.commit()
-        logging.debug("Types unified in database")
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            c.execute("SELECT synonym, main_type FROM type_synonyms")
+            for row in c.fetchall():
+                c.execute('UPDATE equipment SET type=? WHERE LOWER(type)=?', (row['main_type'], row['synonym'].lower()))
+            self.conn.commit()
+            logging.debug("Types unified in database")
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in unify_types_in_db: {e}")
+            raise e
 
     def add_type(self, type_name):
         c = self.conn.cursor()
         try:
+            self.conn.execute("BEGIN TRANSACTION")
             c.execute("INSERT INTO equipment_types (type_name) VALUES (?)", (type_name,))
             self.conn.commit()
             logging.debug(f"Type added: {type_name}")
             return True
         except sqlite3.IntegrityError:
+            self.conn.rollback()
             logging.error(f"Type already exists: {type_name}")
             return False
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in add_type: {e}")
+            raise e
 
     def get_all_types(self):
         try:
@@ -286,30 +375,48 @@ class Database:
 
     def update_type(self, old_name, new_name):
         c = self.conn.cursor()
-        c.execute("UPDATE equipment SET type=? WHERE type=?", (new_name, old_name))
-        c.execute("UPDATE equipment_types SET type_name=? WHERE type_name=?", (new_name, old_name))
-        c.execute("UPDATE type_synonyms SET main_type=? WHERE main_type=?", (new_name, old_name))
-        self.conn.commit()
-        logging.debug(f"Type updated: {old_name} -> {new_name}")
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            c.execute("UPDATE equipment SET type=? WHERE type=?", (new_name, old_name))
+            c.execute("UPDATE equipment_types SET type_name=? WHERE type_name=?", (new_name, old_name))
+            c.execute("UPDATE type_synonyms SET main_type=? WHERE main_type=?", (new_name, old_name))
+            self.conn.commit()
+            logging.debug(f"Type updated: {old_name} -> {new_name}")
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in update_type: {e}")
+            raise e
 
     def delete_type(self, type_name):
         c = self.conn.cursor()
-        c.execute("UPDATE equipment SET type='?' WHERE type=?", (type_name,))
-        c.execute("DELETE FROM equipment_types WHERE type_name=?", (type_name,))
-        c.execute("DELETE FROM type_synonyms WHERE main_type=?", (type_name,))
-        self.conn.commit()
-        logging.debug(f"Type deleted: {type_name}")
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            c.execute("UPDATE equipment SET type='?' WHERE type=?", (type_name,))
+            c.execute("DELETE FROM equipment_types WHERE type_name=?", (type_name,))
+            c.execute("DELETE FROM type_synonyms WHERE main_type=?", (type_name,))
+            self.conn.commit()
+            logging.debug(f"Type deleted: {type_name}")
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in delete_type: {e}")
+            raise e
 
     def add_room(self, room_name, max_seats=0):
         c = self.conn.cursor()
         try:
+            self.conn.execute("BEGIN TRANSACTION")
             c.execute("INSERT INTO rooms (room_name, max_seats) VALUES (?, ?)", (room_name, max_seats))
             self.conn.commit()
             logging.debug(f"Room added: {room_name}")
             return True
         except sqlite3.IntegrityError:
+            self.conn.rollback()
             logging.error(f"Room already exists: {room_name}")
             return False
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in add_room: {e}")
+            raise e
 
     def get_all_rooms(self):
         try:
@@ -323,28 +430,41 @@ class Database:
 
     def update_room(self, old_name, new_name, max_seats=None):
         c = self.conn.cursor()
-        c.execute("UPDATE equipment SET room=? WHERE room=?", (new_name, old_name))
-        query = "UPDATE rooms SET room_name=?"
-        params = [new_name]
-        if max_seats is not None:
-            query += ", max_seats=?"
-            params.append(max_seats)
-        query += " WHERE room_name=?"
-        params.append(old_name)
-        c.execute(query, params)
-        self.conn.commit()
-        logging.debug(f"Room updated: {old_name} -> {new_name}")
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            query = "UPDATE rooms SET room_name=?"
+            params = [new_name]
+            if max_seats is not None:
+                query += ", max_seats=?"
+                params.append(max_seats)
+            query += " WHERE room_name=?"
+            params.append(old_name)
+            c.execute(query, params)
+            c.execute("UPDATE equipment SET room=? WHERE room=?", (new_name, old_name))
+            self.conn.commit()
+            logging.debug(f"Room updated: {old_name} -> {new_name}")
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in update_room: {e}")
+            raise e
 
     def delete_room(self, room_name):
         c = self.conn.cursor()
-        c.execute("UPDATE equipment SET room='' WHERE room=?", (room_name,))
-        c.execute("DELETE FROM rooms WHERE room_name=?", (room_name,))
-        self.conn.commit()
-        logging.debug(f"Room deleted: {room_name}")
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            c.execute("UPDATE equipment SET room='' WHERE room=?", (room_name,))
+            c.execute("DELETE FROM rooms WHERE room_name=?", (room_name,))
+            self.conn.commit()
+            logging.debug(f"Room deleted: {room_name}")
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in delete_room: {e}")
+            raise e
 
     def add_owner(self, full_name, position='', pc_ip='', pc_name='', phone='', email=''):
         c = self.conn.cursor()
         try:
+            self.conn.execute("BEGIN TRANSACTION")
             c.execute('''
             INSERT INTO owners (full_name, position, pc_ip, pc_name, phone, email)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -353,8 +473,13 @@ class Database:
             logging.debug(f"Owner added: {full_name}")
             return True
         except sqlite3.IntegrityError:
+            self.conn.rollback()
             logging.error(f"Owner already exists: {full_name}")
             return False
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in add_owner: {e}")
+            raise e
 
     def get_all_owners(self):
         try:
@@ -368,45 +493,52 @@ class Database:
 
     def update_owner(self, old_full_name, new_full_name, position=None, pc_ip=None, pc_name=None, phone=None, email=None):
         c = self.conn.cursor()
-        c.execute("UPDATE equipment SET owner=? WHERE owner=?", (new_full_name, old_full_name))
-        query = "UPDATE owners SET full_name=?"
-        params = [new_full_name]
-        if position is not None:
-            query += ", position=?"
-            params.append(position)
-        if pc_ip is not None:
-            query += ", pc_ip=?"
-            params.append(pc_ip)
-        if pc_name is not None:
-            query += ", pc_name=?"
-            params.append(pc_name)
-        if phone is not None:
-            query += ", phone=?"
-            params.append(phone)
-        if email is not None:
-            query += ", email=?"
-            params.append(email)
-        query += " WHERE full_name=?"
-        params.append(old_full_name)
-        c.execute(query, params)
-        self.conn.commit()
-        logging.debug(f"Owner updated: {old_full_name} -> {new_full_name}")
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            c.execute("UPDATE equipment SET owner=? WHERE owner=?", (new_full_name, old_full_name))
+            query = "UPDATE owners SET full_name=?"
+            params = [new_full_name]
+            if position is not None:
+                query += ", position=?"
+                params.append(position)
+            if pc_ip is not None:
+                query += ", pc_ip=?"
+                params.append(pc_ip)
+            if pc_name is not None:
+                query += ", pc_name=?"
+                params.append(pc_name)
+            if phone is not None:
+                query += ", phone=?"
+                params.append(phone)
+            if email is not None:
+                query += ", email=?"
+                params.append(email)
+            query += " WHERE full_name=?"
+            params.append(old_full_name)
+            c.execute(query, params)
+            self.conn.commit()
+            logging.debug(f"Owner updated: {old_full_name} -> {new_full_name}")
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in update_owner: {e}")
+            raise e
 
     def delete_owner(self, full_name):
         c = self.conn.cursor()
-        c.execute("UPDATE equipment SET owner='' WHERE owner=?", (full_name,))
-        c.execute("DELETE FROM owners WHERE full_name=?", (full_name,))
-        self.conn.commit()
-        logging.debug(f"Owner deleted: {full_name}")
-
-    def get_owner_details(self, full_name):
-        c = self.conn.cursor()
-        c.execute("SELECT * FROM owners WHERE full_name=?", (full_name,))
-        return c.fetchone()
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            c.execute("UPDATE equipment SET owner='' WHERE owner=?", (full_name,))
+            c.execute("DELETE FROM owners WHERE full_name=?", (full_name,))
+            self.conn.commit()
+            logging.debug(f"Owner deleted: {full_name}")
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in delete_owner: {e}")
+            raise e
 
     def ensure_type(self, type_name):
         if type_name and type_name not in self.get_all_types():
-            self.add_type(type_name)
+            self.add_type_no_transaction(type_name)
 
     def ensure_room(self, room_name):
         if room_name and room_name not in self.get_all_rooms():
@@ -414,24 +546,30 @@ class Database:
 
     def ensure_owner(self, full_name):
         if full_name and full_name not in self.get_all_owners():
-            self.add_owner(full_name)
+            self.add_owner_no_transaction(full_name)
 
     def populate_rooms_and_owners_from_equipment(self):
         c = self.conn.cursor()
-        c.execute("SELECT DISTINCT room FROM equipment WHERE room != '' AND room IS NOT NULL")
-        rooms = [row['room'] for row in c.fetchall()]
-        for room in rooms:
-            self.ensure_room(room)
-        c.execute("SELECT DISTINCT owner FROM equipment WHERE owner != '' AND owner IS NOT NULL")
-        owners = [row['owner'] for row in c.fetchall()]
-        for owner in owners:
-            self.ensure_owner(owner)
-        c.execute("SELECT DISTINCT type FROM equipment WHERE type != '' AND type IS NOT NULL")
-        types = [row['type'] for row in c.fetchall()]
-        for t in types:
-            self.ensure_type(t)
-        self.conn.commit()
-        logging.debug("Populated rooms and owners from equipment")
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            c.execute("SELECT DISTINCT room FROM equipment WHERE room != '' AND room IS NOT NULL")
+            rooms = [row['room'] for row in c.fetchall()]
+            for room in rooms:
+                self.ensure_room(room)
+            c.execute("SELECT DISTINCT owner FROM equipment WHERE owner != '' AND owner IS NOT NULL")
+            owners = [row['owner'] for row in c.fetchall()]
+            for owner in owners:
+                self.ensure_owner(owner)
+            c.execute("SELECT DISTINCT type FROM equipment WHERE type != '' AND type IS NOT NULL")
+            types = [row['type'] for row in c.fetchall()]
+            for t in types:
+                self.ensure_type(t)
+            self.conn.commit()
+            logging.debug("Populated rooms and owners from equipment")
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in populate_rooms_and_owners_from_equipment: {e}")
+            raise e
 
     def get_room_max_seats(self, room_name):
         c = self.conn.cursor()
@@ -449,14 +587,20 @@ class Database:
     def add_synonym(self, synonym, main_type):
         c = self.conn.cursor()
         try:
+            self.conn.execute("BEGIN TRANSACTION")
             self.ensure_type(main_type)
             c.execute("INSERT INTO type_synonyms (synonym, main_type) VALUES (?, ?)", (synonym, main_type))
             self.conn.commit()
             logging.debug(f"Synonym added: {synonym} -> {main_type}")
             return True
         except sqlite3.IntegrityError:
+            self.conn.rollback()
             logging.error(f"Synonym already exists: {synonym} -> {main_type}")
             return False
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in add_synonym: {e}")
+            raise e
 
     def get_main_type(self, synonym):
         c = self.conn.cursor()
@@ -468,9 +612,15 @@ class Database:
 
     def delete_synonym(self, synonym):
         c = self.conn.cursor()
-        c.execute("DELETE FROM type_synonyms WHERE synonym=?", (synonym,))
-        self.conn.commit()
-        logging.debug(f"Synonym deleted: {synonym}")
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            c.execute("DELETE FROM type_synonyms WHERE synonym=?", (synonym,))
+            self.conn.commit()
+            logging.debug(f"Synonym deleted: {synonym}")
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in delete_synonym: {e}")
+            raise e
 
     def get_synonyms_for_type(self, main_type):
         c = self.conn.cursor()
@@ -500,6 +650,28 @@ class Database:
             logging.error(f"Invalid color_theme: {color_theme}")
             raise ValueError(f"Невалідна кольорова тема: {color_theme}")
         c = self.conn.cursor()
-        c.execute("UPDATE settings SET appearance_mode=?, color_theme=? WHERE id=1", (appearance_mode, color_theme))
-        self.conn.commit()
-        logging.debug(f"Settings updated: appearance_mode={appearance_mode}, color_theme={color_theme}")
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            c.execute("UPDATE settings SET appearance_mode=?, color_theme=? WHERE id=1", (appearance_mode, color_theme))
+            self.conn.commit()
+            logging.debug(f"Settings updated: appearance_mode={appearance_mode}, color_theme={color_theme}")
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"Error in update_settings: {e}")
+            raise e
+    
+    def add_owner_no_transaction(self, full_name, position='', pc_ip='', pc_name='', phone='', email=''):
+        c = self.conn.cursor()
+        try:
+            c.execute('''
+            INSERT INTO owners (full_name, position, pc_ip, pc_name, phone, email)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''', (full_name, position, pc_ip, pc_name, phone, email))
+            logging.debug(f"Owner added (no transaction): {full_name}")
+            return True
+        except sqlite3.IntegrityError:
+            logging.error(f"Owner already exists: {full_name}")
+            return False
+        except Exception as e:
+            logging.error(f"Error in add_owner_no_transaction: {e}")
+            raise e

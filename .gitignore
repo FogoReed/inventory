@@ -1,7 +1,12 @@
-inventory.db
 inventory.log
 full-first.py
 structures.py
 post.py
 config.py
-what.txt
+*.db
+*.log
+*.txt
+*.zip
+*.rar
+__pycache__/
+*.pyc

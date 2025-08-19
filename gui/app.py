@@ -3,6 +3,11 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox, filedialog
 import threading
+import os
+import socket
+import dropbox
+from dropbox.exceptions import ApiError, AuthError
+from dropbox.files import FileMetadata
 from gui.main_menu import MainMenu
 from gui.equipment_list import EquipmentListPage
 from gui.search_page import SearchPage
@@ -14,6 +19,9 @@ from gui.owners_management import OwnersManagementPage
 from gui.types_management import TypesManagementPage
 from gui.settings import SettingsPage
 from database.database import Database
+from config import DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN, DROPBOX_DB_PATH, LOCAL_DB_PATH
+from datetime import datetime
+import shutil
 
 class App(ctk.CTk):
     def __init__(self):
@@ -23,6 +31,15 @@ class App(ctk.CTk):
             self.title("Inventory Manager")
             self.geometry("900x600")
             self.minsize(900, 600)
+
+            # Ініціалізація Dropbox
+            self.dropbox_client = None
+            self.init_dropbox()
+
+            # Перевірка та синхронізація бази даних при запуску
+            self.download_from_dropbox()
+
+            self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
             # Ініціалізація бази даних і теми
             self.db = Database()
@@ -108,6 +125,149 @@ class App(ctk.CTk):
             messagebox.showerror("Помилка", f"Помилка ініціалізації програми: {str(e)}")
             raise
 
+    def init_dropbox(self):
+        try:
+            self.dropbox_client = dropbox.Dropbox(
+                app_key=DROPBOX_APP_KEY,
+                app_secret=DROPBOX_APP_SECRET,
+                oauth2_refresh_token=DROPBOX_REFRESH_TOKEN
+            )
+            account = self.dropbox_client.users_get_current_account()
+            logging.debug(f"Dropbox client initialized successfully. Account: {account.email}")
+            # Тестовий виклик для перевірки scope
+            try:
+                self.dropbox_client.files_get_metadata(DROPBOX_DB_PATH)
+                logging.debug("Scope 'files.metadata.read' is available and file exists")
+            except dropbox.exceptions.ApiError as api_err:
+                if isinstance(api_err.error, dropbox.files.GetMetadataError) and api_err.error.is_path() and api_err.error.get_path().is_not_found():
+                    logging.warning(f"File not found in Dropbox: {DROPBOX_DB_PATH}. Will create on first upload.")
+                else:
+                    logging.error(f"Scope test failed: {api_err}")
+                    messagebox.showwarning("Попередження", "Не вдалося отримати метадані файлу в Dropbox. Перевірте шлях або дозволи.")
+                    self.dropbox_client = None
+                    return
+        except dropbox.exceptions.AuthError as e:
+            logging.error(f"Dropbox authentication failed: {e}")
+            messagebox.showerror("Помилка", "Не вдалося підключитися до Dropbox. Перевірте конфігурацію.")
+            self.dropbox_client = None
+        except Exception as e:
+            logging.error(f"Error initializing Dropbox: {e}")
+            messagebox.showerror("Помилка", f"Помилка ініціалізації Dropbox: {str(e)}")
+            self.dropbox_client = None
+
+    def has_internet(self):
+        """Перевірка наявності інтернет-з'єднання"""
+        try:
+            socket.create_connection(("www.google.com", 80), timeout=2)
+            return True
+        except OSError:
+            logging.warning("No internet connection")
+            return False
+
+    def show_progress_bar(self, message="Виконання операції..."):
+        """Показати прогрес-бар у головному потоці"""
+        try:
+            self.after(0, lambda: self._show_progress_bar(message))
+        except Exception as e:
+            logging.error(f"Error scheduling show progress bar: {e}")
+
+    def _show_progress_bar(self, message):
+        """Внутрішня функція для показу прогрес-бару"""
+        try:
+            if self.progress_frame is not None:
+                self.progress_frame.destroy()  # Закриваємо попередній прогрес-бар, якщо існує
+            self.progress_frame = ctk.CTkFrame(self, fg_color="gray50", corner_radius=10)
+            self.progress_frame.place(relx=0.5, rely=0.5, anchor="center")
+            ctk.CTkLabel(self.progress_frame, text=message, font=ctk.CTkFont(size=16)).pack(pady=10, padx=20)
+            self.progress_bar = ctk.CTkProgressBar(self.progress_frame, mode="indeterminate")
+            self.progress_bar.pack(pady=10, padx=20)
+            self.progress_bar.start()
+            logging.debug(f"Progress bar shown with message: {message}")
+            self.update()
+        except Exception as e:
+            logging.error(f"Error showing progress bar: {e}")
+
+    def hide_progress_bar(self):
+        """Приховати прогрес-бар у головному потоці"""
+        try:
+            self.after(0, self._hide_progress_bar)
+        except Exception as e:
+            logging.error(f"Error scheduling hide progress bar: {e}")
+
+    def _hide_progress_bar(self):
+        """Внутрішня функція для приховування прогрес-бару"""
+        try:
+            if self.progress_frame is not None:
+                self.progress_bar.stop()
+                self.progress_frame.destroy()
+                self.progress_frame = None
+                self.progress_bar = None
+                logging.debug("Progress bar hidden")
+                self.update()
+        except Exception as e:
+            logging.error(f"Error hiding progress bar: {e}")
+
+    def download_from_dropbox(self):
+        if not self.has_internet() or not self.dropbox_client:
+            logging.warning("Skipping Dropbox download: no internet or client not initialized")
+            messagebox.showwarning("Попередження", "Немає підключення до Dropbox або Інтернету")
+            return
+        try:
+            self.show_progress_bar("Завантаження з Dropbox...")
+            metadata = self.dropbox_client.files_get_metadata(DROPBOX_DB_PATH)
+            if not isinstance(metadata, FileMetadata):
+                logging.warning(f"No file found at {DROPBOX_DB_PATH}")
+                self.hide_progress_bar()
+                return
+            cloud_modified = metadata.client_modified
+            local_path = LOCAL_DB_PATH
+            if os.path.exists(local_path):
+                local_modified = datetime.fromtimestamp(os.path.getmtime(local_path))
+                if local_modified >= cloud_modified:
+                    logging.debug("Local DB is newer or same as cloud DB, skipping download")
+                    self.hide_progress_bar()
+                    return
+                # Створюємо бекап локальної бази
+                backup_path = local_path + ".backup"
+                shutil.copyfile(local_path, backup_path)
+                logging.debug(f"Created backup of local DB at {backup_path}")
+            # Завантажуємо хмарну базу
+            self.dropbox_client.files_download_to_file(local_path, DROPBOX_DB_PATH)
+            logging.debug(f"Downloaded DB from Dropbox to {local_path}")
+            self.hide_progress_bar()
+        except ApiError as e:
+            logging.error(f"Dropbox API error during download: {e}")
+            self.hide_progress_bar()
+            messagebox.showerror("Помилка", f"Не вдалося завантажити базу з Dropbox: {str(e)}")
+        except Exception as e:
+            logging.error(f"Error downloading from Dropbox: {e}")
+            self.hide_progress_bar()
+
+    def upload_to_dropbox(self):
+        if not self.has_internet() or not self.dropbox_client:
+            logging.warning("Skipping Dropbox upload: no internet or client not initialized")
+            messagebox.showwarning("Попередження", "Немає підключення до Dropbox або Інтернету")
+            return
+        try:
+            logging.debug("Starting upload to Dropbox")
+            self.show_progress_bar("Завантаження до Dropbox...")
+            with open(LOCAL_DB_PATH, "rb") as f:
+                self.dropbox_client.files_upload(f.read(), DROPBOX_DB_PATH, mode=dropbox.files.WriteMode("overwrite"))
+            logging.debug("Database uploaded to Dropbox successfully")
+        except Exception as e:
+            logging.error(f"Error uploading to Dropbox: {e}")
+            messagebox.showerror("Помилка", f"Не вдалося зберегти базу в Dropbox: {str(e)}")
+        finally:
+            self.hide_progress_bar()
+
+    def __del__(self):
+        try:
+            logging.debug("Closing app, uploading to Dropbox...")
+            self.upload_to_dropbox()
+        except Exception as e:
+            logging.error(f"Error uploading to Dropbox on close: {e}")
+        super().__del__()
+
     def _create_frame_by_name(self, name: str, parent):
         try:
             cls = self.page_classes.get(name)
@@ -136,34 +296,6 @@ class App(ctk.CTk):
         except Exception as e:
             logging.error(f"Error switching to page {page_name}: {e}")
             messagebox.showerror("Помилка", f"Не вдалося відкрити сторінку {page_name}: {str(e)}")
-
-    def show_progress_bar(self):
-        """Показати прогрес-бар"""
-        try:
-            if self.progress_frame is None:
-                self.progress_frame = ctk.CTkFrame(self, fg_color="gray50", corner_radius=10)
-                self.progress_frame.place(relx=0.5, rely=0.5, anchor="center")
-                ctk.CTkLabel(self.progress_frame, text="Оновлення теми...", font=ctk.CTkFont(size=16)).pack(pady=10, padx=20)
-                self.progress_bar = ctk.CTkProgressBar(self.progress_frame, mode="indeterminate")
-                self.progress_bar.pack(pady=10, padx=20)
-                self.progress_bar.start()
-                logging.debug("Progress bar shown")
-                self.update()
-        except Exception as e:
-            logging.error(f"Error showing progress bar: {e}")
-
-    def hide_progress_bar(self):
-        """Приховати прогрес-бар"""
-        try:
-            if self.progress_frame is not None:
-                self.progress_bar.stop()
-                self.progress_frame.destroy()
-                self.progress_frame = None
-                self.progress_bar = None
-                logging.debug("Progress bar hidden")
-                self.update()
-        except Exception as e:
-            logging.error(f"Error hiding progress bar: {e}")
 
     def refresh_pages(self, preserve_page: str | None = None, recreate: bool = False):
         try:
@@ -227,11 +359,14 @@ class App(ctk.CTk):
             for widget in self.winfo_children():
                 if isinstance(widget, ctk.CTkFrame):
                     for child in widget.winfo_children():
-                        if isinstance(child, (ctk.CTkLabel, ctk.CTkButton, ctk.CTkOptionMenu, ctk.CTkEntry)):
-                            child.configure(fg_color='transparent', text_color=None)
-                        elif isinstance(child, ctk.CTkFrame):
-                            child.configure(fg_color=None)
-                        child.update()
+                        try:
+                            if isinstance(child, (ctk.CTkLabel, ctk.CTkButton, ctk.CTkOptionMenu, ctk.CTkEntry)):
+                                child.configure(fg_color='transparent', text_color=None)
+                            elif isinstance(child, ctk.CTkFrame):
+                                child.configure(fg_color='transparent')
+                            child.update()
+                        except Exception as e:
+                            logging.error(f"Error updating widget {child}: {e}")
                 widget.update()
             self.update()
             logging.debug("Widgets updated in App")
@@ -239,24 +374,20 @@ class App(ctk.CTk):
             logging.error(f"Error updating widgets in App: {e}")
 
     def import_excel(self):
-        try:
-            filepath = filedialog.askopenfilename(title="Оберіть Excel файл", filetypes=[("Excel files", "*.xlsx *.xls")])
-            if not filepath:
-                return
-            def import_thread():
-                try:
-                    imported = self.db.import_from_excel(filepath)
-                    messagebox.showinfo("Імпорт", f"Імпортовано записів: {imported}")
-                    self.refresh_pages()
-                    logging.debug(f"Excel import completed: {imported} records")
-                except Exception as e:
-                    logging.error(f"Error in import_excel: {e}")
-                    messagebox.showerror("Помилка", f"Помилка імпорту: {e}")
-            threading.Thread(target=import_thread).start()
-        except Exception as e:
-            logging.error(f"Error in import_excel: {e}")
-            messagebox.showerror("Помилка", f"Помилка імпорту: {str(e)}")
-
+        filepath = filedialog.askopenfilename(title="Оберіть Excel файл", filetypes=[("Excel files", "*.xlsx *.xls")])
+        if not filepath:
+            return
+        def import_thread():
+            try:
+                imported = self.db.import_from_excel(filepath)
+                messagebox.showinfo("Імпорт", f"Імпортовано записів: {imported}")
+                self.refresh_pages()
+                logging.debug(f"Excel import completed: {imported} records")
+            except Exception as e:
+                logging.error(f"Error in import_excel: {e}")
+                messagebox.showerror("Помилка", f"Помилка імпорту: {e}")
+        threading.Thread(target=import_thread).start()
+        
     def show_about(self):
         try:
             messagebox.showinfo("Про програму", "Програма інвентаризації\nРеалізовано на customtkinter та SQLite")
@@ -273,15 +404,21 @@ class App(ctk.CTk):
                 raise ValueError(f"Невалідний режим відображення: {appearance_mode}")
             if color_theme not in valid_color_themes:
                 raise ValueError(f"Невалідна кольорова тема: {color_theme}")
+            self.show_progress_bar("Оновлення теми...")
             ctk.set_appearance_mode(appearance_mode)
             ctk.set_default_color_theme(color_theme)
             self.db.update_settings(appearance_mode, color_theme)
             self.refresh_pages(preserve_page="SettingsPage", recreate=True)
+            self.hide_progress_bar()
             logging.debug(f"Theme updated: appearance_mode={appearance_mode}, color_theme={color_theme}")
         except Exception as e:
             logging.error(f"Error updating theme: {e}")
             messagebox.showerror("Помилка", f"Не вдалося оновити тему: {str(e)}")
-            raise
+            self.hide_progress_bar()
+
+    def on_closing(self):
+        self.upload_to_dropbox()
+        self.destroy()
 
 if __name__ == "__main__":
     logging.basicConfig(filename='inventory.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')

@@ -57,7 +57,11 @@ class SettingsPage(ctk.CTkFrame):
         ctk.CTkButton(self, text="Попередній перегляд", command=self.preview_theme).pack(pady=10)
         ctk.CTkButton(self, text="Зберегти", command=self.save_settings).pack(pady=10)
         ctk.CTkButton(self, text="Скасувати", command=self.cancel_changes).pack(pady=10)
-        ctk.CTkButton(self, text="Назад", command=self.on_back).pack(pady=10)  # Changed to call on_back
+        ctk.CTkButton(self, text="Назад", command=self.on_back).pack(pady=10)
+
+        # Додано кнопки для синхронізації з Dropbox
+        ctk.CTkButton(self, text="Завантажити до Dropbox", command=self.controller.upload_to_dropbox).pack(pady=10)
+        ctk.CTkButton(self, text="Скачати з Dropbox", command=self.controller.download_from_dropbox).pack(pady=10)
 
     def on_back(self):
         if not self.saved:
@@ -111,12 +115,13 @@ class SettingsPage(ctk.CTkFrame):
             if color_theme not in valid_color_themes:
                 messagebox.showerror("Помилка", f"Невалідна кольорова тема: {color_theme}")
                 return
-            self.controller.show_progress_bar()
+            self.controller.show_progress_bar("Збереження налаштувань...")
             ctk.set_appearance_mode(appearance_mode)
             ctk.set_default_color_theme(color_theme)
             self.controller.update_theme(appearance_mode, color_theme)
             self.saved = True
             self.controller.refresh_pages(preserve_page="SettingsPage", recreate=True)
+            self.update_widgets()  # Додаємо оновлення віджетів
             self.controller.hide_progress_bar()
             self.controller.switch_page("SettingsPage")  # Return to SettingsPage
             messagebox.showinfo("Успіх", "Налаштування теми збережено")
@@ -142,7 +147,7 @@ class SettingsPage(ctk.CTkFrame):
         try:
             for widget in self.winfo_children():
                 if isinstance(widget, (ctk.CTkButton, ctk.CTkOptionMenu, ctk.CTkLabel)):
-                    widget.configure(fg_color='transparent', text_color='transparent')
+                    widget.configure(fg_color='transparent', text_color=None)  # None для text_color, щоб використовувати колір за замовчуванням
                 elif isinstance(widget, ctk.CTkFrame):
                     widget.configure(fg_color='transparent')
                 widget.update()
